@@ -1,0 +1,12 @@
+# 环境和配置
+.env
+config.yaml
+
+# 缓存和编译
+__pycache__/
+*.pyc
+
+# 虚拟环境
+.venv/
+venv/
+env/

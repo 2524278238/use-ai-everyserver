@@ -1,0 +1,27 @@
+# 远程服务器配置 (推荐在 .env 中设置密码，避免泄露)
+server:
+  host: "10.10.80.63"
+  port: 22
+  user: "ytli"
+  # password: "your_password_here" 
+
+# 同步配置
+sync:
+  local_root: "." # 本地项目的根目录，通常是当前目录
+  remote_root: "/data/lyt/error-word" # 远程服务器的项目根目录
+  files_to_sync:
+    - "src/config/arguments.py"
+    - "src/pipeline/train_rl.py"
+    - "src/pipeline/eval_rl.py"
+    - "src/pipeline/train_data.py"
+    - "src/main.py"
+    - "run_debug_rl.sh"
+    - "run_all_rl_experiments.sh"
+
+# 运行命令配置
+run:
+  # 运行前需要执行的环境配置（如加载环境变量、conda 激活等）
+  env_setup: "export PATH=/data/lyt/a/envs/rstar/bin:$PATH && export LD_LIBRARY_PATH=/data/lyt/a/envs/rstar/lib:/usr/local/cuda-12.4/targets/x86_64-linux/lib:$LD_LIBRARY_PATH && export LD_PRELOAD=/data/lyt/a/envs/rstar/lib/libstdc++.so.6"
+  
+  # 实际要运行的命令
+  command: "pkill -f '[s]rc/main.py' || true; sleep 2; nvidia-smi && sed -i 's/\\r$//' run_debug_rl.sh && bash run_debug_rl.sh"
