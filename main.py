@@ -30,7 +30,7 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
         # Sync Files
         print("\nSyncing files...")
         
-        # Resolve remote_root to an absolute path once to save time
+        # Resolve remote_root to an absolute path
         stdin, stdout, stderr = client.exec_command(f"eval echo \"{remote_root}\"")
         abs_remote_root = stdout.read().decode().strip()
         
@@ -38,32 +38,30 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
              print(f"Error: Could not resolve remote_root '{remote_root}'")
              return
              
-        # Make sure remote_root exists
-        stdin, stdout, stderr = client.exec_command(f"mkdir -p \"{abs_remote_root}\"")
-        exit_status = stdout.channel.recv_exit_status() # blocks until finished, no sleep needed
-        if exit_status != 0:
-             print(f"Warning: Failed to create remote_root '{abs_remote_root}': {stderr.read().decode()}")
-
-        created_dirs = {abs_remote_root}
-
+        # Collect all directories to create
+        dirs_to_make = {abs_remote_root}
+        upload_tasks = []
+        
         for rel_path in files_to_sync:
             local_path = os.path.join(local_root, rel_path)
-            # Use absolute remote path
             remote_path = f"{abs_remote_root}/{rel_path}".replace('\\', '/').replace('//', '/')
-            
             if not os.path.exists(local_path):
                 print(f"Local file not found, skipping: {local_path}")
                 continue
                 
-            # Ensure remote directory exists, only if we haven't created it yet
             remote_dir = os.path.dirname(remote_path)
-            if remote_dir and remote_dir not in created_dirs:
-                stdin, stdout, stderr = client.exec_command(f"mkdir -p \"{remote_dir}\"")
-                exit_status = stdout.channel.recv_exit_status()
-                if exit_status != 0:
-                     print(f"Warning: Failed to create directory '{remote_dir}': {stderr.read().decode()}")
-                created_dirs.add(remote_dir)
+            if remote_dir:
+                dirs_to_make.add(remote_dir)
             
+            upload_tasks.append((local_path, remote_path))
+            
+        # Create all required directories in ONE single SSH command
+        if dirs_to_make:
+            mkdir_cmd = "mkdir -p " + " ".join(f"\"{d}\"" for d in dirs_to_make)
+            _, stdout, _ = client.exec_command(mkdir_cmd)
+            stdout.channel.recv_exit_status()
+
+        for local_path, remote_path in upload_tasks:
             print(f"Uploading {local_path} -> {remote_path}")
             try:
                 # direct sftp put with absolute path is fast and reliable
@@ -92,39 +90,32 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
         
         if screen_session:
             print(f"Targeting screen session: {screen_session}")
-            # Ensure the screen session exists
-            stdin, stdout, stderr = client.exec_command(f"screen -ls | grep {screen_session}")
-            if stdout.channel.recv_exit_status() != 0:
-                print(f"Warning: Screen session '{screen_session}' not found or not active.")
             
-            # To get real-time logs, we can redirect the command's output to a temporary file
-            # and then continuously tail that file in the current SSH session.
             import uuid
-            log_file = f"/tmp/use_ai_server_{uuid.uuid4().hex}.log"
+            import base64
             
-            # Send command to screen session via stuff
-            # We wrap the run_cmd to redirect output to log_file, and add a unique completion marker
+            log_file = f"/tmp/use_ai_server_{uuid.uuid4().hex}.log"
+            script_file = f"/tmp/use_ai_server_script_{uuid.uuid4().hex}.sh"
             end_marker = f"DONE_{uuid.uuid4().hex}"
             
-            # Use the already resolved absolute remote root
             wrapped_cmd = f"cd \"{abs_remote_root}\" && ({run_cmd}) > {log_file} 2>&1; echo {end_marker} >> {log_file}"
-            
-            # To avoid newline and escaping issues with screen's stuff command, 
-            # we write the command to a temporary bash script and execute that script in the screen.
-            script_file = f"/tmp/use_ai_server_script_{uuid.uuid4().hex}.sh"
-            
-            import base64
             encoded_script = base64.b64encode(wrapped_cmd.encode()).decode()
             
-            # Create the script file on the remote server and WAIT for it to finish
-            _, script_out, _ = client.exec_command(f"echo {encoded_script} | base64 -d > {script_file} && chmod +x {script_file}")
-            script_out.channel.recv_exit_status()
+            # Combine screen check, script creation, and execution into ONE command
+            setup_cmd = f"""
+            if ! screen -ls | grep -q "{screen_session}"; then
+                echo "WARNING_SCREEN_NOT_FOUND"
+            fi
+            echo {encoded_script} | base64 -d > {script_file}
+            chmod +x {script_file}
+            screen -S {screen_session} -X stuff 'bash {script_file}'$'\\n'
+            """
             
-            # Send the execution command to screen. Using $'\n' ensures a literal enter key is passed in bash.
-            full_cmd = f"screen -S {screen_session} -X stuff 'bash {script_file}'$'\\n'"
-            print(f"Sending command to screen: {full_cmd}")
+            stdin, stdout, stderr = client.exec_command(setup_cmd)
+            out = stdout.read().decode()
+            if "WARNING_SCREEN_NOT_FOUND" in out:
+                print(f"Warning: Screen session '{screen_session}' not found or not active.")
             
-            stdin, stdout, stderr = client.exec_command(full_cmd)
             exit_status = stdout.channel.recv_exit_status()
             
             if exit_status == 0:
