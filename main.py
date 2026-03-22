@@ -13,7 +13,7 @@ def load_config(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-def sync_and_run(host, port, username, password, local_root, remote_root, files_to_sync, run_cmd):
+def sync_and_run(host, port, username, password, local_root, remote_root, files_to_sync, run_cmd, screen_session=None):
     print(f"Connecting to {host}:{port} as {username}...")
     try:
         # Create SSH client
@@ -57,39 +57,70 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
         # Execute Command
         print(f"\nExecuting remote command: {run_cmd}")
         
-        full_cmd = f"cd {remote_root} && {run_cmd} 2>&1"
-        print(f"Full command: {full_cmd}")
-        
-        # Exec command
-        stdin, stdout, stderr = client.exec_command(full_cmd, get_pty=False)
-        
-        # Stream output
-        print("-" * 40)
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                output = stdout.channel.recv(1024).decode('utf-8', errors='ignore')
-                sys.stdout.write(output)
-                sys.stdout.flush()
-            if stderr.channel.recv_ready():
-                error = stderr.channel.recv(1024).decode('utf-8', errors='ignore')
-                sys.stderr.write(error)
-                sys.stderr.flush()
-            time.sleep(0.1)
+        if screen_session:
+            print(f"Targeting screen session: {screen_session}")
+            # Ensure the screen session exists
+            stdin, stdout, stderr = client.exec_command(f"screen -ls | grep {screen_session}")
+            if stdout.channel.recv_exit_status() != 0:
+                print(f"Warning: Screen session '{screen_session}' not found or not active.")
             
-        # Final flush
-        while stdout.channel.recv_ready():
-            sys.stdout.write(stdout.channel.recv(1024).decode('utf-8', errors='ignore'))
-        while stderr.channel.recv_ready():
-            sys.stderr.write(stderr.channel.recv(1024).decode('utf-8', errors='ignore'))
+            # Send command to screen session via stuff
+            # We add a newline (\n) to execute the command
+            # Using base64 encoding to avoid complex escaping issues with quotes in the command
+            import base64
+            encoded_cmd = base64.b64encode(f"cd {remote_root} && {run_cmd}\n".encode()).decode()
+            full_cmd = f"screen -S {screen_session} -X stuff \"$(echo {encoded_cmd} | base64 -d)\""
+            print(f"Sending command to screen: {full_cmd}")
             
-        exit_status = stdout.channel.recv_exit_status()
-        print("-" * 40)
-        
-        if exit_status == 0:
-            print("\nCommand executed successfully!")
+            stdin, stdout, stderr = client.exec_command(full_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            print("-" * 40)
+            if exit_status == 0:
+                print(f"\nCommand successfully sent to screen session '{screen_session}'.")
+                print("Note: You will not see live output here because the command is running inside the screen session.")
+                print(f"Please log into the server and attach to the screen session (`screen -r {screen_session}`) to view the output.")
+            else:
+                print(f"\nFailed to send command to screen. Exit code {exit_status}")
+                error_msg = stderr.read().decode('utf-8')
+                if error_msg:
+                    print(f"Error: {error_msg}")
+            print("-" * 40)
+            
         else:
-            print(f"\nCommand failed with exit code {exit_status}")
+            full_cmd = f"cd {remote_root} && {run_cmd} 2>&1"
+            print(f"Full command: {full_cmd}")
             
+            # Exec command
+            stdin, stdout, stderr = client.exec_command(full_cmd, get_pty=False)
+            
+            # Stream output
+            print("-" * 40)
+            while not stdout.channel.exit_status_ready():
+                if stdout.channel.recv_ready():
+                    output = stdout.channel.recv(1024).decode('utf-8', errors='ignore')
+                    sys.stdout.write(output)
+                    sys.stdout.flush()
+                if stderr.channel.recv_ready():
+                    error = stderr.channel.recv(1024).decode('utf-8', errors='ignore')
+                    sys.stderr.write(error)
+                    sys.stderr.flush()
+                time.sleep(0.1)
+                
+            # Final flush
+            while stdout.channel.recv_ready():
+                sys.stdout.write(stdout.channel.recv(1024).decode('utf-8', errors='ignore'))
+            while stderr.channel.recv_ready():
+                sys.stderr.write(stderr.channel.recv(1024).decode('utf-8', errors='ignore'))
+                
+            exit_status = stdout.channel.recv_exit_status()
+            print("-" * 40)
+            
+            if exit_status == 0:
+                print("\nCommand executed successfully!")
+            else:
+                print(f"\nCommand failed with exit code {exit_status}")
+                
         client.close()
         
     except Exception as e:
@@ -123,6 +154,7 @@ if __name__ == "__main__":
     FILES_TO_SYNC = config.get("sync", {}).get("files_to_sync", [])
     
     # Support for complex environment setup before running the main command
+    screen_session = config.get("run", {}).get("screen_session", "")
     ENV_SETUP = config.get("run", {}).get("env_setup", "")
     MAIN_CMD = config.get("run", {}).get("command", "")
     
@@ -131,4 +163,4 @@ if __name__ == "__main__":
     else:
         RUN_CMD = MAIN_CMD
 
-    sync_and_run(HOST, PORT, USER, PASS, LOCAL_ROOT, REMOTE_ROOT, FILES_TO_SYNC, RUN_CMD)
+    sync_and_run(HOST, PORT, USER, PASS, LOCAL_ROOT, REMOTE_ROOT, FILES_TO_SYNC, RUN_CMD, screen_session)

@@ -20,6 +20,12 @@ sync:
 
 # 运行命令配置
 run:
+  # (可选) 指定要发送命令的 screen 会话名称
+  # 如果配置了此项，命令将被发送到指定的 screen 窗口中执行，而不是直接在当前 SSH 会话中执行。
+  # 非常适合需要在通过 screen 申请的计算节点（GPU）上运行任务的场景。
+  # 留空或删除此项则直接运行。
+  screen_session: ""
+
   # 运行前需要执行的环境配置（如加载环境变量、conda 激活等）
   env_setup: "export PATH=/data/lyt/a/envs/rstar/bin:$PATH && export LD_LIBRARY_PATH=/data/lyt/a/envs/rstar/lib:/usr/local/cuda-12.4/targets/x86_64-linux/lib:$LD_LIBRARY_PATH && export LD_PRELOAD=/data/lyt/a/envs/rstar/lib/libstdc++.so.6"
   

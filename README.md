@@ -10,8 +10,9 @@
 
 - **按需同步**：只上传你指定需要修改和执行的脚本/代码文件，速度极快。
 - **环境隔离配置**：支持分离的环境变量加载（如 `conda`、自定义的 `LD_LIBRARY_PATH` 等），自动兼容复杂的 Linux 训练/运行环境。
+- **支持 Screen 会话（新增！）**：针对需要通过 `screen` 申请计算节点（如 GPU）的集群环境，支持将命令自动发送到指定的 `screen` 会话中执行。
 - **安全的凭据管理**：利用 `.env` 环境变量存储密码，不会不小心将密码提交到 Git 仓库中。
-- **实时日志流式输出**：像在本地执行一样，实时查看远端服务器上执行程序的 `stdout` 和 `stderr` 输出。
+- **实时日志流式输出**：像在本地执行一样，实时查看远端服务器上执行程序的 `stdout` 和 `stderr` 输出（如果使用 Screen 模式，则需要进入服务器对应 screen 查看）。
 
 ## 📦 快速开始
 
@@ -57,6 +58,10 @@ sync:
     - "run.sh"
 
 run:
+  # (可选) 如果你需要在指定的 screen 会话里运行命令（比如申请了 GPU 节点的 screen）
+  # 请填写 screen 会话的名称。留空则直接在当前 SSH 环境运行。
+  screen_session: "my_gpu_session" 
+  
   env_setup: "export PATH=/path/to/conda/bin:$PATH" # 运行前的环境配置
   command: "bash run.sh" # 具体要执行的命令
 ```
