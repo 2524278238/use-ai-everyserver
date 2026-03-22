@@ -64,28 +64,62 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
             if stdout.channel.recv_exit_status() != 0:
                 print(f"Warning: Screen session '{screen_session}' not found or not active.")
             
+            # To get real-time logs, we can redirect the command's output to a temporary file
+            # and then continuously tail that file in the current SSH session.
+            import uuid
+            log_file = f"/tmp/use_ai_server_{uuid.uuid4().hex}.log"
+            
             # Send command to screen session via stuff
-            # We add a newline (\n) to execute the command
-            # Using base64 encoding to avoid complex escaping issues with quotes in the command
+            # We wrap the run_cmd to redirect output to log_file, and add a unique completion marker
+            end_marker = f"DONE_{uuid.uuid4().hex}"
+            wrapped_cmd = f"cd {remote_root} && ({run_cmd}) > {log_file} 2>&1; echo {end_marker} >> {log_file}\n"
+            
             import base64
-            encoded_cmd = base64.b64encode(f"cd {remote_root} && {run_cmd}\n".encode()).decode()
+            encoded_cmd = base64.b64encode(wrapped_cmd.encode()).decode()
             full_cmd = f"screen -S {screen_session} -X stuff \"$(echo {encoded_cmd} | base64 -d)\""
             print(f"Sending command to screen: {full_cmd}")
             
             stdin, stdout, stderr = client.exec_command(full_cmd)
             exit_status = stdout.channel.recv_exit_status()
             
-            print("-" * 40)
             if exit_status == 0:
                 print(f"\nCommand successfully sent to screen session '{screen_session}'.")
-                print("Note: You will not see live output here because the command is running inside the screen session.")
-                print(f"Please log into the server and attach to the screen session (`screen -r {screen_session}`) to view the output.")
+                print("Tailing logs from the screen session...\n")
+                print("-" * 40)
+                
+                # Start tailing the log file
+                tail_cmd = f"touch {log_file} && tail -f {log_file}"
+                tail_stdin, tail_stdout, tail_stderr = client.exec_command(tail_cmd, get_pty=False)
+                
+                # Stream output until the end marker is found
+                try:
+                    while True:
+                        if tail_stdout.channel.recv_ready():
+                            output = tail_stdout.channel.recv(1024).decode('utf-8', errors='ignore')
+                            if end_marker in output:
+                                # Print everything before the marker
+                                output = output.replace(end_marker, "").strip()
+                                if output:
+                                    sys.stdout.write(output + "\n")
+                                    sys.stdout.flush()
+                                break
+                            sys.stdout.write(output)
+                            sys.stdout.flush()
+                        time.sleep(0.1)
+                except KeyboardInterrupt:
+                    print("\nLog tailing interrupted by user.")
+                finally:
+                    # Clean up the tail process and the log file
+                    client.exec_command(f"pkill -P {tail_stdout.channel.remote_mac} tail") # Rough attempt to kill tail
+                    client.exec_command(f"rm -f {log_file}")
+                
+                print("-" * 40)
+                print("\nCommand execution in screen session completed (or log tailing stopped).")
             else:
                 print(f"\nFailed to send command to screen. Exit code {exit_status}")
                 error_msg = stderr.read().decode('utf-8')
                 if error_msg:
                     print(f"Error: {error_msg}")
-            print("-" * 40)
             
         else:
             full_cmd = f"cd {remote_root} && {run_cmd} 2>&1"
