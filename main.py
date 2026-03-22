@@ -72,11 +72,21 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
             # Send command to screen session via stuff
             # We wrap the run_cmd to redirect output to log_file, and add a unique completion marker
             end_marker = f"DONE_{uuid.uuid4().hex}"
-            wrapped_cmd = f"cd {remote_root} && ({run_cmd}) > {log_file} 2>&1; echo {end_marker} >> {log_file}\n"
+            wrapped_cmd = f"cd {remote_root} && ({run_cmd}) > {log_file} 2>&1; echo {end_marker} >> {log_file}"
+            
+            # To avoid newline and escaping issues with screen's stuff command, 
+            # we write the command to a temporary bash script and execute that script in the screen.
+            script_file = f"/tmp/use_ai_server_script_{uuid.uuid4().hex}.sh"
             
             import base64
-            encoded_cmd = base64.b64encode(wrapped_cmd.encode()).decode()
-            full_cmd = f"screen -S {screen_session} -X stuff \"$(echo {encoded_cmd} | base64 -d)\""
+            encoded_script = base64.b64encode(wrapped_cmd.encode()).decode()
+            
+            # Create the script file on the remote server and WAIT for it to finish
+            _, script_out, _ = client.exec_command(f"echo {encoded_script} | base64 -d > {script_file} && chmod +x {script_file}")
+            script_out.channel.recv_exit_status()
+            
+            # Send the execution command to screen. Using $'\n' ensures a literal enter key is passed in bash.
+            full_cmd = f"screen -S {screen_session} -X stuff 'bash {script_file}'$'\\n'"
             print(f"Sending command to screen: {full_cmd}")
             
             stdin, stdout, stderr = client.exec_command(full_cmd)
@@ -109,9 +119,10 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
                 except KeyboardInterrupt:
                     print("\nLog tailing interrupted by user.")
                 finally:
-                    # Clean up the tail process and the log file
-                    client.exec_command(f"pkill -P {tail_stdout.channel.remote_mac} tail") # Rough attempt to kill tail
-                    client.exec_command(f"rm -f {log_file}")
+                    # Clean up the tail process and the temporary files
+                    # tail command might still be running. Easiest way to kill the specific tail is via pkill with full path
+                    client.exec_command(f"pkill -f 'tail -f {log_file}'") 
+                    client.exec_command(f"rm -f {log_file} {script_file}")
                 
                 print("-" * 40)
                 print("\nCommand execution in screen session completed (or log tailing stopped).")
