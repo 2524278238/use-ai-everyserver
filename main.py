@@ -30,18 +30,26 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
         # Sync Files
         print("\nSyncing files...")
         
+        # Resolve remote root once
+        stdin, stdout, stderr = client.exec_command(f"eval echo \"{remote_root}\"")
+        resolved_remote_root = stdout.read().decode().strip()
+        if not resolved_remote_root:
+            print(f"Error: Could not resolve remote_root '{remote_root}'")
+            return
+            
         # Make sure remote_root exists and check if it succeeds
-        # We use eval echo to resolve ~ to the actual home directory
-        stdin, stdout, stderr = client.exec_command(f"resolved_root=$(eval echo \"{remote_root}\") && mkdir -p \"$resolved_root\"")
+        stdin, stdout, stderr = client.exec_command(f"mkdir -p \"{resolved_remote_root}\"")
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
-             print(f"Warning: Failed to create remote_root '{remote_root}': {stderr.read().decode()}")
-        time.sleep(0.5)
+             print(f"Warning: Failed to create remote_root '{resolved_remote_root}': {stderr.read().decode()}")
+
+        # Keep track of created directories to avoid redundant ssh commands
+        created_dirs = {resolved_remote_root}
 
         for rel_path in files_to_sync:
             local_path = os.path.join(local_root, rel_path)
             # Ensure consistent forward slashes for remote path
-            remote_path = f"{remote_root}/{rel_path}".replace('\\', '/').replace('//', '/')
+            remote_path = f"{resolved_remote_root}/{rel_path}".replace('\\', '/').replace('//', '/')
             
             if not os.path.exists(local_path):
                 print(f"Local file not found, skipping: {local_path}")
@@ -49,26 +57,17 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
                 
             # Ensure remote directory exists
             remote_dir = os.path.dirname(remote_path)
-            if remote_dir:
-                stdin, stdout, stderr = client.exec_command(f"resolved_dir=$(eval echo \"{remote_dir}\") && mkdir -p \"$resolved_dir\"")
+            if remote_dir and remote_dir not in created_dirs:
+                stdin, stdout, stderr = client.exec_command(f"mkdir -p \"{remote_dir}\"")
                 exit_status = stdout.channel.recv_exit_status()
                 if exit_status != 0:
                      print(f"Warning: Failed to create directory '{remote_dir}': {stderr.read().decode()}")
-                time.sleep(0.5) # ensure directory is fully created
+                created_dirs.add(remote_dir)
             
             print(f"Uploading {local_path} -> {remote_path}")
             try:
-                # create file via exec_command to ensure it exists, sftp sometimes struggles with newly created dirs
-                client.exec_command(f"resolved_path=$(eval echo \"{remote_path}\") && touch \"$resolved_path\"")
-                
-                # To make SFTP work, we need the resolved absolute path
-                stdin, stdout, stderr = client.exec_command(f"eval echo \"{remote_path}\"")
-                resolved_remote_path = stdout.read().decode().strip()
-                
-                if resolved_remote_path:
-                    sftp.put(local_path, resolved_remote_path)
-                else:
-                    raise Exception("Could not resolve remote path")
+                # Direct SFTP put using resolved absolute path is much faster than running touch/eval per file
+                sftp.put(local_path, remote_path)
             except Exception as e:
                 print(f"SFTP failed: {e}. Trying fallback upload...")
                 try:
