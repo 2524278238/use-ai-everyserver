@@ -1,6 +1,6 @@
 # 远程服务器配置 (推荐在 .env 中设置密码，避免泄露)
 server:
-  host: "10.10.80.63"
+  host: "your_remote_host"
   port: 22
   user: "ytli"
   # password: "your_password_here" 
