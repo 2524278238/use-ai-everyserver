@@ -1,9 +1,10 @@
 sync:
   local_root: "."
-  remote_root: "~"
-  files_to_sync: []
+  remote_root: "~/test_use_ai"
+  files_to_sync: 
+    - "hello_test.py"
 
 run:
   screen_session: "278347"
   env_setup: ""
-  command: "echo '--- Start Screen Log Stream Test ---' && sleep 2 && echo 'Middle of test...' && sleep 2 && echo '--- Test Finished! ---'"
+  command: "python3 hello_test.py"

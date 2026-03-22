@@ -29,28 +29,63 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
         
         # Sync Files
         print("\nSyncing files...")
+        
+        # Make sure remote_root exists and check if it succeeds
+        # We use eval echo to resolve ~ to the actual home directory
+        stdin, stdout, stderr = client.exec_command(f"resolved_root=$(eval echo \"{remote_root}\") && mkdir -p \"$resolved_root\"")
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+             print(f"Warning: Failed to create remote_root '{remote_root}': {stderr.read().decode()}")
+        time.sleep(0.5)
+
         for rel_path in files_to_sync:
             local_path = os.path.join(local_root, rel_path)
-            remote_path = remote_root + "/" + rel_path.replace("\\", "/") # Ensure unix style
+            # Ensure consistent forward slashes for remote path
+            remote_path = f"{remote_root}/{rel_path}".replace('\\', '/').replace('//', '/')
             
             if not os.path.exists(local_path):
-                print(f"Warning: Local file {local_path} does not exist, skipping.")
+                print(f"Local file not found, skipping: {local_path}")
                 continue
-
+                
             # Ensure remote directory exists
             remote_dir = os.path.dirname(remote_path)
-            try:
-                sftp.stat(remote_dir)
-            except FileNotFoundError:
-                print(f"Creating remote directory: {remote_dir}")
-                client.exec_command(f"mkdir -p {remote_dir}")
-                time.sleep(0.5) # Wait for mkdir
+            if remote_dir:
+                stdin, stdout, stderr = client.exec_command(f"resolved_dir=$(eval echo \"{remote_dir}\") && mkdir -p \"$resolved_dir\"")
+                exit_status = stdout.channel.recv_exit_status()
+                if exit_status != 0:
+                     print(f"Warning: Failed to create directory '{remote_dir}': {stderr.read().decode()}")
+                time.sleep(0.5) # ensure directory is fully created
             
             print(f"Uploading {local_path} -> {remote_path}")
             try:
-                sftp.put(local_path, remote_path)
+                # create file via exec_command to ensure it exists, sftp sometimes struggles with newly created dirs
+                client.exec_command(f"resolved_path=$(eval echo \"{remote_path}\") && touch \"$resolved_path\"")
+                
+                # To make SFTP work, we need the resolved absolute path
+                stdin, stdout, stderr = client.exec_command(f"eval echo \"{remote_path}\"")
+                resolved_remote_path = stdout.read().decode().strip()
+                
+                if resolved_remote_path:
+                    sftp.put(local_path, resolved_remote_path)
+                else:
+                    raise Exception("Could not resolve remote path")
             except Exception as e:
-                print(f"Failed to upload {local_path}: {e}")
+                print(f"SFTP failed: {e}. Trying fallback upload...")
+                try:
+                    # Fallback using base64 encoded echo
+                    with open(local_path, 'rb') as f:
+                        content = f.read()
+                    import base64
+                    encoded_content = base64.b64encode(content).decode()
+                    # Resolve remote path before writing
+                    cmd = f"resolved_path=$(eval echo \"{remote_path}\") && echo {encoded_content} | base64 -d > \"$resolved_path\""
+                    stdin, stdout, stderr = client.exec_command(cmd)
+                    if stdout.channel.recv_exit_status() != 0:
+                         print(f"Failed to upload via base64: {stderr.read().decode()}")
+                    else:
+                         print("Fallback upload successful.")
+                except Exception as ex:
+                    print(f"Failed to upload {local_path} completely: {ex}")
         
         sftp.close()
         
@@ -72,7 +107,9 @@ def sync_and_run(host, port, username, password, local_root, remote_root, files_
             # Send command to screen session via stuff
             # We wrap the run_cmd to redirect output to log_file, and add a unique completion marker
             end_marker = f"DONE_{uuid.uuid4().hex}"
-            wrapped_cmd = f"cd {remote_root} && ({run_cmd}) > {log_file} 2>&1; echo {end_marker} >> {log_file}"
+            
+            # Resolve remote_root so that things like ~ expand properly in the script
+            wrapped_cmd = f"cd $(eval echo \"{remote_root}\") && ({run_cmd}) > {log_file} 2>&1; echo {end_marker} >> {log_file}"
             
             # To avoid newline and escaping issues with screen's stuff command, 
             # we write the command to a temporary bash script and execute that script in the screen.
